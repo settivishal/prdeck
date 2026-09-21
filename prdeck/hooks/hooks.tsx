@@ -14,7 +14,7 @@ const SKIP = /(^|\/)(node_modules|dist|build|vendor|tests?|__tests__|\.git)\/|(^
 
 export type Finding = { file: string; line: number; rule: string; sev: Sev; text: string };
 type State = { base: string; files: number; findings: Finding[]; error?: string; scanning: boolean; at: number; prev: number; churn: { file: string; lines: number }[]; fx: number };
-const FX_FRAMES = 30; // 1 s of confetti at the band's 30 fps cap
+const FX_FRAMES = 15; // 1.5 s of confetti at the 100 ms tick
 
 let state: State = { base: "?", files: 0, findings: [], scanning: false, at: 0, prev: 0, churn: [], fx: 0 };
 let spin = 0;
@@ -90,7 +90,7 @@ async function scan($: EngineInterface): Promise<void> {
     for (const f of untracked) churn.push({ file: f, lines: (await $.fs.read(f)).split("\n").length });
     const wasDirty = live().length > 0;
     state = { ...state, base, files: r.files + untracked.length, findings: r.findings, churn, error: undefined };
-    if (wasDirty && live().length === 0 && churn.length > 0) state.fx = FX_FRAMES; // just went clean: party
+    if (wasDirty && live().length === 0) state.fx = FX_FRAMES; // just went clean: party
   } catch (err) {
     const error = String((err as Error).message ?? err).split("\n")[0] ?? "";
     if (error !== state.error) $.ui.log(`prdeck: ${error}`, { to: "debug" });
@@ -268,11 +268,14 @@ export const register: Register = (on, options) => {
     void scan($);
     void fetchList($);
     $.clock.every(30_000, () => void scan($));
-    $.clock.every(200, () => { // pending-check spinner, confetti frames
+    let tick = 0;
+    $.clock.every(100, () => { // pending-check spinner (every 2nd tick), confetti frames
+      tick++;
       const pending = pr.list.some(p => checkSummary(p.statusCheckRollup).pending);
-      if (pending) spin = (spin + 1) % SPIN.length;
-      if (state.fx > 0) state.fx--;
-      if (pending || state.fx > 0) $.ui.invalidate("ui.render");
+      if (pending && tick % 2 === 0) spin = (spin + 1) % SPIN.length;
+      const animating = state.fx > 0;
+      if (animating) state.fx--; // last frame paints at fx=0, then the strip comes back
+      if ((pending && tick % 2 === 0) || animating) $.ui.invalidate("ui.render");
     });
     $.clock.every(cfg.pollSeconds * 1000, () => void fetchList($));
     return next(e);

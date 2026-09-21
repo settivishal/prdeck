@@ -1,12 +1,15 @@
 {
   "name": "prdeck",
-  "owner": { "name": "Vishal K Setti" },
+  "owner": {
+    "name": "Vishal K Setti"
+  },
   "plugins": [
     {
       "name": "prdeck",
       "source": "./prdeck",
       "description": "PR feed, review pane and security checks above the Claude Code prompt",
-      "version": "0.4.0"
+      "version": "0.5.0"
     }
-  ]
+  ],
+  "description": "prdeck: pull requests and security findings above the Claude Code prompt"
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "prdeck",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "PR feed, review pane and security checks above the prompt",
   "author": {
     "name": "Vishal K Setti",
@@ -36,6 +36,14 @@
       "title": "PR poll interval (s)",
       "description": "How often to ask gh for open PRs.",
       "default": 60
+    },
+    "rulesFile": {
+      "type": "string",
+      "title": "Extra rules file",
+      "description": "Path to a JSON array of extra scan rules: [{\"name\",\"pattern\",\"flags\"?,\"sev\":\"high|med|low\"}]. Merged with the built-in rules.",
+      "default": ""
     }
-  }
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/settivishal/prdeck"
 }

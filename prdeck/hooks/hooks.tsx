@@ -1,24 +1,12 @@
 import type { EngineInterface, Register } from "claude-code";
 import { parseDiff, capHunks, checkSummary, checkGlyphs, decision, type Pr, type PrDetail, type DiffFile } from "./pr.ts";
+import { BUILTIN, compileRules, type Rule, type Sev } from "./rules.ts";
 
-type Sev = "high" | "med" | "low";
 const PANE = "pr-security";
 // filled from plugin.json userConfig at register()
-let cfg = { guard: "warn" as "warn" | "deny" | "off", base: "", mine: true, pollSeconds: 60 };
-
+let cfg = { guard: "warn" as "warn" | "deny" | "off", base: "", mine: true, pollSeconds: 60, rulesFile: "" };
 // ponytail: regex scan; swap in $.model when noise gets loud
-const RULES: [string, RegExp, Sev][] = [
-  ["secret", /(api[_-]?key|secret|password|token)\s*[:=]\s*['"][^'"]{8,}/i, "high"],
-  ["private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/, "high"],
-  ["eval", /\beval\s*\(|new Function\s*\(/, "high"],
-  ["shell exec", /\b(exec|execSync|spawn)\s*\(|subprocess\.(call|run|Popen)\(.*shell\s*=\s*True|os\.system\(/, "high"],
-  ["sql concat", /(SELECT|INSERT|UPDATE|DELETE)\b[^;\n]*(\+\s*\w|\$\{|%s|\.format\()/i, "high"],
-  ["pickle/yaml", /pickle\.loads?\(|yaml\.load\((?!.*SafeLoader)/, "high"],
-  ["innerHTML", /dangerouslySetInnerHTML|\.innerHTML\s*=/, "med"], // sec-ignore
-  ["tls off", /rejectUnauthorized\s*:\s*false|verify\s*=\s*False|InsecureSkipVerify\s*:\s*true/, "med"],
-  ["chmod 777", /chmod\s+(-R\s+)?777|0o?777\b/, "med"], // sec-ignore
-  ["http url", /['"]http:\/\/(?!localhost|127\.0\.0\.1)/, "low"],
-];
+let RULES: Rule[] = compileRules(BUILTIN).rules;
 
 // ponytail: fixed skip list; make it a userConfig field if someone asks
 const SKIP = /(^|\/)(node_modules|dist|build|vendor|tests?|__tests__|\.git)\/|(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|go\.sum)$|\.(md|min\.js|map|snap|svg|lock)$/;
@@ -39,7 +27,7 @@ export function scanText(file: string, text: string, startLine = 1): Finding[] {
   const out: Finding[] = [];
   text.split("\n").forEach((raw, i) => {
     if (raw.includes("sec-ignore")) return;
-    for (const [rule, re, sev] of RULES) if (re.test(raw)) out.push({ file, line: startLine + i, rule, sev, text: raw.trim() });
+    for (const { name, re, sev } of RULES) if (re.test(raw)) out.push({ file, line: startLine + i, rule: name, sev, text: raw.trim() });
   });
   return out;
 }
@@ -65,6 +53,17 @@ async function pickBase($: EngineInterface): Promise<string> {
     if (exitCode === 0) return b;
   }
   throw new Error("no base branch");
+}
+
+async function loadRules($: EngineInterface): Promise<void> {
+  if (!cfg.rulesFile) return;
+  try {
+    const { rules, errors } = compileRules(JSON.parse(await $.fs.read(cfg.rulesFile)));
+    RULES = [...compileRules(BUILTIN).rules, ...rules];
+    for (const m of errors) $.ui.log(`prdeck rulesFile: ${m}`);
+  } catch (err) {
+    $.ui.log(`prdeck rulesFile: ${String((err as Error).message ?? err)}`);
+  }
 }
 
 async function scan($: EngineInterface): Promise<void> {
@@ -120,8 +119,9 @@ function guard($: EngineInterface, id: string, file: string, text: string): { de
 
 // ---------- PR feed (gh) ----------
 const PR_PANE = "prs";
+const MAX_DIFF_LINES = 4000; // past this, gh pr diff runs into the timeout; show a hint instead
 type PrState = {
-  repo?: string; list: Pr[]; seen: Set<number>; error?: string; busy?: string;
+  repo?: string; list: Pr[]; seen: Set<number>; error?: string; rawError?: string; busy?: string; diffNote?: string;
   selected?: number; detail?: PrDetail; diff?: DiffFile[]; diffText?: string; fileIdx: number;
   tab: "info" | "diff" | "reviews"; compose?: "comment" | "changes"; mine: boolean; bodyChunks: number;
 };
@@ -147,9 +147,13 @@ async function fetchList($: EngineInterface): Promise<void> {
     for (const p of list) if (!pr.seen.has(p.number)) $.ui.toast(`New PR #${p.number}: ${p.title}`);
     pr = { ...pr, list, error: undefined };
   } catch (err) {
-    const error = String((err as Error).message ?? err);
-    if (error !== pr.error) $.ui.log(`prdeck gh: ${error}`, { to: "debug" });
-    pr = { ...pr, error };
+    const raw = String((err as Error).message ?? err);
+    const error = /no git remotes|not a git repository|could not determine/i.test(raw) ? "" // not a GitHub repo: no row
+      : /auth login|not logged|gh auth/i.test(raw) ? "gh not logged in — run: gh auth login"
+      : /ENOENT|not found|cannot start|No such file/i.test(raw) ? "gh not installed — https://cli.github.com"
+      : raw.split("\n")[0] ?? "gh failed";
+    if (raw !== pr.rawError) $.ui.log(`prdeck gh: ${raw}`, { to: "debug" });
+    pr = { ...pr, error, rawError: raw, list: [] };
   }
   $.ui.invalidate("ui.render");
 }
@@ -164,11 +168,15 @@ async function fetchDetail($: EngineInterface, n: number): Promise<void> {
   pr = { ...pr, selected: n, busy: "loading", detail: undefined, diff: undefined, fileIdx: 0, tab: "info", compose: undefined, bodyChunks: 1 };
   $.ui.invalidate("ui.render");
   try {
+    const p = pr.list.find(x => x.number === n);
+    const lines = (p?.additions ?? 0) + (p?.deletions ?? 0);
+    const tooBig = lines > MAX_DIFF_LINES;
     const [view, diffText] = await Promise.all([
       gh($, ["pr", "view", String(n), "--json", "body,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments,files"]),
-      gh($, ["pr", "diff", String(n)], 60_000),
+      tooBig ? Promise.resolve("") : gh($, ["pr", "diff", String(n)], 60_000),
     ]);
-    pr = { ...pr, detail: JSON.parse(view), diff: parseDiff(diffText), diffText, busy: undefined };
+    pr = { ...pr, detail: JSON.parse(view), diff: parseDiff(diffText), diffText, busy: undefined,
+      diffNote: tooBig ? `diff too large (${lines} lines) — run: gh pr diff ${n}` : undefined };
   } catch (err) {
     pr = { ...pr, busy: undefined, error: String((err as Error).message ?? err) };
   }
@@ -239,10 +247,12 @@ export const register: Register = (on, options) => {
     base: typeof options.base === "string" ? options.base.trim() : "",
     mine: options.mine !== false,
     pollSeconds: Math.max(15, Number(options.pollSeconds) || 60),
+    rulesFile: typeof options.rulesFile === "string" ? options.rulesFile.trim() : "",
   };
   pr = { ...pr, mine: cfg.mine };
   on("session.start", async ($, e, next) => {
     ignored = new Set(((await $.store.get("ignored")) as string[] | undefined) ?? []);
+    await loadRules($);
     await $.command.register({ name: "prdeck", description: "Security findings and open PRs, with the raw lists handed to the model." });
     void scan($);
     void fetchList($);
@@ -269,7 +279,9 @@ export const register: Register = (on, options) => {
     const unseen = pr.list.filter(p => !pr.seen.has(p.number)).length;
     const prColor = pr.list.some(p => p.reviewDecision === "CHANGES_REQUESTED" || checkSummary(p.statusCheckRollup).fail) ? "error"
       : pr.list.some(p => p.isDraft || checkSummary(p.statusCheckRollup).pending) ? "warning" : "success";
-    const prRow = pr.error || !pr.repo ? null : (
+    const prRow = pr.error ? (
+      <Box gap={1}><Text color="warning" bold>⇄</Text><Text dimColor wrap="truncate">{`PRs: ${pr.error}`}</Text></Box>
+    ) : !pr.repo ? null : (
       <Box gap={1}>
         <Text color={prColor} bold>⇄</Text>
         <Text color={prColor} wrap="truncate">
@@ -374,7 +386,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" marginTop={1}>
             <Box gap={1}>
               <Button key="prev" plain dimColor hotkey="k" onPress={() => setPr({ fileIdx: Math.max(0, pr.fileIdx - 1) }, $)}>‹</Button>
-              <Text wrap="truncate">{file ? `${pr.fileIdx + 1}/${pr.diff!.length} ${file.file}` : "no diff"}</Text>
+              <Text wrap="truncate">{file ? `${pr.fileIdx + 1}/${pr.diff!.length} ${file.file}` : pr.diffNote ?? "no diff"}</Text>
               <Button key="next" plain dimColor hotkey="j" onPress={() => setPr({ fileIdx: Math.min((pr.diff?.length ?? 1) - 1, pr.fileIdx + 1) }, $)}>›</Button>
             </Box>
             {cap ? <Code format="diff" path={file!.file} source={cap.source} wrap="truncate-end" /> : null}

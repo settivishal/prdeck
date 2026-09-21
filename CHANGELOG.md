@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.10.0 — 2026-09-21
+- q on a PR and /prdeck qr <url> draw a scannable QR code in a pane
+
 ## 0.9.1 — 2026-09-21
 - fix: strip hover rows threw h is not a function
 

@@ -2,9 +2,9 @@ import type { EngineInterface, Register } from "claude-code";
 import { parseDiff, capHunks, checkSummary, checkGlyphs, decision, type Pr, type PrDetail, type DiffFile } from "./pr.ts";
 
 type Sev = "high" | "med" | "low";
-// ponytail: constants until someone asks for userConfig
-const GUARD: "warn" | "deny" = "warn";
 const PANE = "pr-security";
+// filled from plugin.json userConfig at register()
+let cfg = { guard: "warn" as "warn" | "deny" | "off", base: "", mine: true, pollSeconds: 60 };
 
 // ponytail: regex scan; swap in $.model when noise gets loud
 const RULES: [string, RegExp, Sev][] = [
@@ -60,7 +60,7 @@ export function scanDiff(diff: string): { files: number; findings: Finding[] } {
 }
 
 async function pickBase($: EngineInterface): Promise<string> {
-  for (const b of ["origin/main", "origin/master", "main", "master"]) {
+  for (const b of cfg.base ? [cfg.base] : ["origin/main", "origin/master", "main", "master"]) {
     const { exitCode } = await $.process.run(["git", "rev-parse", "--verify", "-q", b]);
     if (exitCode === 0) return b;
   }
@@ -109,13 +109,13 @@ function fillFix($: EngineInterface, f: Finding): void {
 }
 
 function guard($: EngineInterface, id: string, file: string, text: string): { deny: string } | undefined {
-  if (SKIP.test(file)) return;
+  if (cfg.guard === "off" || SKIP.test(file)) return;
   const hits = scanText(file, text);
   if (!hits.length) return;
   const h = hits[0]!;
   const msg = `⚠ pr-security: ${h.rule} at line ${h.line}${hits.length > 1 ? ` (+${hits.length - 1} more)` : ""}`;
   $.ui.notice(id, msg);
-  return GUARD === "deny" ? { deny: msg } : undefined;
+  return cfg.guard === "deny" ? { deny: msg } : undefined;
 }
 
 // ---------- PR feed (gh) ----------
@@ -233,14 +233,21 @@ const sevCounts = (fs: Finding[]) => (["high", "med", "low"] as Sev[])
   .map(s => [s, fs.filter(f => f.sev === s).length] as const)
   .filter(([, n]) => n > 0);
 
-export const register: Register = (on) => {
+export const register: Register = (on, options) => {
+  cfg = {
+    guard: (["warn", "deny", "off"] as const).find(g => g === options.guard) ?? "warn",
+    base: typeof options.base === "string" ? options.base.trim() : "",
+    mine: options.mine !== false,
+    pollSeconds: Math.max(15, Number(options.pollSeconds) || 60),
+  };
+  pr = { ...pr, mine: cfg.mine };
   on("session.start", async ($, e, next) => {
     ignored = new Set(((await $.store.get("ignored")) as string[] | undefined) ?? []);
     await $.command.register({ name: "prdeck", description: "Security findings and open PRs, with the raw lists handed to the model." });
     void scan($);
     void fetchList($);
     $.clock.every(30_000, () => void scan($));
-    $.clock.every(60_000, () => void fetchList($));
+    $.clock.every(cfg.pollSeconds * 1000, () => void fetchList($));
     return next(e);
   });
   on("command.run", { command: "prdeck" }, () => report());

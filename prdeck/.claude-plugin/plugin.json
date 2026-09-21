@@ -1,7 +1,41 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "prdeck",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "PR feed, review pane and security checks above the prompt",
-  "author": { "name": "Vishal K Setti", "email": "vishalsetti2000@gmail.com" }
+  "author": {
+    "name": "Vishal K Setti",
+    "email": "vishalsetti2000@gmail.com"
+  },
+  "userConfig": {
+    "guard": {
+      "type": "string",
+      "title": "Write/Edit guard",
+      "description": "When Claude is about to write a line that hits a security rule: warn in the permission dialog, deny the call, or do nothing.",
+      "options": [
+        "warn",
+        "deny",
+        "off"
+      ],
+      "default": "warn"
+    },
+    "base": {
+      "type": "string",
+      "title": "Base branch",
+      "description": "Branch to diff against for the security scan. Empty = auto (origin/main, origin/master, main, master).",
+      "default": ""
+    },
+    "mine": {
+      "type": "boolean",
+      "title": "Only my PRs",
+      "description": "PR row and pane list only PRs you authored. Off shows every open PR.",
+      "default": true
+    },
+    "pollSeconds": {
+      "type": "number",
+      "title": "PR poll interval (s)",
+      "description": "How often to ask gh for open PRs.",
+      "default": 60
+    }
+  }
 }

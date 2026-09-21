@@ -406,9 +406,10 @@ export const register: Register = (on, options) => {
     return next({ ...e, blocks: [...e.blocks, { name: "prdeck", text }] });
   });
 
-  on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
+  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (e.props.hasSurvey || e.surface !== "terminal") return next(e); // the band is terminal-only; narrows the table for Raster
     const { Box, Text, Button, Raster } = $.ui.resolve(e);
+    const below = await next(e); // other plugins' band rows (tamaclaude) stack under ours
     const fs = live();
     const n = fs.length;
     const w = Math.max(1, e.props.bodyColumns - 2);
@@ -494,7 +495,7 @@ export const register: Register = (on, options) => {
       {strip ? <Box paddingLeft={2}>{strip}</Box> : null}
       </Box>
     );
-    return <Box flexDirection="column">{secRows}{prRow}</Box>;
+    return <Box flexDirection="column">{secRows}{prRow}{below}</Box>;
   });
 
   on("ui.render", { component: "Pane" }, ($, e, next) => {

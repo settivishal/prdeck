@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.9.1 — 2026-09-21
+- fix: strip hover rows threw h is not a function
+
 ## 0.9.0 — 2026-09-21
 - strip cycles churn / ci runs / session timeline with 3
 - Strip mode setting picks the start view

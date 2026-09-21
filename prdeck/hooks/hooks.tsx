@@ -203,6 +203,27 @@ async function togglePrPane($: EngineInterface): Promise<void> {
   else { await $.ui.open({ id: PR_PANE, title: "Pull requests", focus: true, closeOnEscape: true }); void markSeen($); }
 }
 
+function fillReview($: EngineInterface, n: number, title: string): void {
+  const sec = pr.diffText ? scanDiff(pr.diffText).findings : [];
+  const notes = sec.length ? `\nprdeck flagged:\n${sec.map(f => `- ${f.file}:${f.line} [${f.rule}] ${f.text}`).join("\n")}` : "";
+  void $.prompt.fill({ mode: "replace", text: `Review PR #${n} "${title}": run \`gh pr diff ${n}\`, check correctness and security, list findings with file:line, then say whether to approve.${notes}` });
+}
+
+// 4: /prdeck report: what the person sees, and the raw list only the model reads
+function report(): { text: string; context: string[] } {
+  const fs = live();
+  const lines = [`security: ${sevCounts(fs).map(([s, c]) => `${c} ${s}`).join(", ") || "clean"} (vs ${state.base})`];
+  for (const f of fs.slice(0, 15)) lines.push(`  ${f.file}:${f.line} [${f.sev}] ${f.rule}`);
+  if (fs.length > 15) lines.push(`  … ${fs.length - 15} more`);
+  lines.push(pr.repo ? `PRs (${pr.mine ? "mine" : "all"}): ${pr.list.length} open` : "PRs: no GitHub remote");
+  for (const p of pr.list) lines.push(`  #${p.number} ${p.title}  ${p.headRefName}→${p.baseRefName}  ${checkGlyphs(p.statusCheckRollup)}  ${decision(p.reviewDecision)}`);
+  const context = [
+    `prdeck security findings (JSON): ${JSON.stringify(fs)}`,
+    `prdeck open PRs (JSON): ${JSON.stringify(pr.list.map(p => ({ number: p.number, title: p.title, head: p.headRefName, base: p.baseRefName, url: p.url, review: p.reviewDecision })))}`,
+  ];
+  return { text: lines.join("\n"), context };
+}
+
 function setPr(patch: Partial<PrState>, $: EngineInterface): void {
   pr = { ...pr, ...patch };
   $.ui.invalidate("ui.render");
@@ -215,12 +236,14 @@ const sevCounts = (fs: Finding[]) => (["high", "med", "low"] as Sev[])
 export const register: Register = (on) => {
   on("session.start", async ($, e, next) => {
     ignored = new Set(((await $.store.get("ignored")) as string[] | undefined) ?? []);
+    await $.command.register({ name: "prdeck", description: "Security findings and open PRs, with the raw lists handed to the model." });
     void scan($);
     void fetchList($);
     $.clock.every(30_000, () => void scan($));
     $.clock.every(60_000, () => void fetchList($));
     return next(e);
   });
+  on("command.run", { command: "prdeck" }, () => report());
   on("turn.start", ($, e, next) => { state.prev = live().length; return next(e); });
   on("turn.complete", async ($, e, next) => { void scan($); void fetchList($); return next(e); });
 
@@ -372,6 +395,7 @@ export const register: Register = (on) => {
             onSubmit={(v: string) => void prAction($, ["review", pr.compose === "changes" ? "--request-changes" : "--comment", "-b", v], pr.compose === "changes" ? "Request changes" : "Comment")} />
         ) : null}
         <Box gap={2} marginTop={1}>
+          <Button key="claude" plain dimColor hotkey="g" onPress={() => fillReview($, cur.number, cur.title)}>ask claude</Button>
           <Button key="approve" plain dimColor hotkey="a" onPress={() => void prAction($, ["review", "--approve"], "Approve")}>approve</Button>
           <Button key="changes" plain dimColor hotkey="x" onPress={() => setPr({ compose: "changes" }, $)}>request changes</Button>
           <Button key="comment" plain dimColor hotkey="c" onPress={() => setPr({ compose: "comment" }, $)}>comment</Button>

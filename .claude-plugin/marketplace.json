@@ -6,7 +6,7 @@
       "name": "prdeck",
       "source": "./prdeck",
       "description": "PR feed, review pane and security checks above the Claude Code prompt",
-      "version": "0.2.0"
+      "version": "0.3.0"
     }
   ]
 }

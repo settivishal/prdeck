@@ -8,7 +8,8 @@ PRs and security findings above the Claude Code prompt. No browser tab.
 ```
 
 - **Security row**: regex scan of your branch vs merge-base (secrets, eval, shell exec, SQL concat, TLS off, ...). Warns in the permission dialog when Claude is about to write a hit. `1` opens the findings pane: filter, `fix` (fills the prompt), `ignore`.
-- **PR row**: open PRs via `gh`. Toast on new ones. `2` opens the pane: description, checks, diff, reviews; approve / request changes / comment / merge / close.
+- **PR row**: open PRs via `gh`. Toast on new ones. `2` opens the pane: description, checks, diff, reviews; approve / request changes / comment / merge / close, or `g` to have Claude review it.
+- **`/prdeck`**: prints findings + PRs and hands the model the raw lists, so "fix the open findings" just works.
 
 ## Install
 

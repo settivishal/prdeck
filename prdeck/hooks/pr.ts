@@ -6,8 +6,9 @@ export type Pr = {
   isDraft: boolean; updatedAt: string; reviewDecision: string; statusCheckRollup: Check[];
   additions: number; deletions: number; changedFiles: number; url: string;
 };
+export type ReviewComment = { path: string; line?: number | null; body: string; user: { login: string } };
 export type PrDetail = {
-  body: string; mergeable: string; mergeStateStatus: string; statusCheckRollup: Check[];
+  body: string; mergeable: string; mergeStateStatus: string; statusCheckRollup: Check[]; headRefOid: string;
   reviews: { author: { login: string }; state: string; body: string; submittedAt: string }[];
   comments: { author: { login: string }; body: string; createdAt: string }[];
   files: { path: string; additions: number; deletions: number }[];

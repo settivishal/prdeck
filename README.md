@@ -21,7 +21,13 @@ Requires Claude Code 2.1.278+ and, for the PR row, [`gh`](https://cli.github.com
 
 **Security row** — scans your branch against its base (merge-base, working tree and untracked files included) for secrets, private keys, `eval`, shell exec, SQL string concat, unsafe deserialization, `innerHTML`, TLS verification off, `chmod 777`, plain `http://`. Colour is the worst severity; `(+N)` means the last turn added findings.
 
-**Heat strip** — one cell per changed file, green → yellow → orange by churn, red where a finding sits. When your branch goes from findings to clean: one second of confetti. Pending checks spin. Hover `⇄` (fullscreen terminal) to peek at the top three PRs without opening the pane.
+**Heat strip** — a treemap of your branch: one bar per changed file, width by lines changed, hot files (with a finding) first in red, then orange > yellow > green by churn; totals at the end. Hover it for the hot file names and the legend. When the branch goes from findings to clean: confetti. Pending checks spin. Hover `⇄` to peek at the top three PRs without opening the pane.
+
+**Haiku triage** — every regex hit is rated by Haiku once (`high` / `med` / `low` / false positive) and cached; false positives vanish from the bar, the reason shows in the pane. Off in `/config` if you'd rather not spend the tokens.
+
+**Git guard** — `git commit` / `git push` run by Claude with high findings open get a warning in the permission dialog (or a refusal with `deny`).
+
+**Model awareness** — open findings ride along as context on the first message, so Claude avoids adding more and fixes them when touching those files.
 
 **Write guard** — when Claude is about to `Write` or `Edit` a line that hits a rule, the permission dialog shows `⚠ prdeck: eval at line 3`. Set it to `deny` to block the call outright.
 
@@ -32,9 +38,17 @@ Requires Claude Code 2.1.278+ and, for the PR row, [`gh`](https://cli.github.com
 | key | pane | inside |
 |---|---|---|
 | `1` | findings | filter by rule · `fix` fills the prompt · `ignore` / `unignore` (persisted) · `r` rescan · `c` clear ignores |
-| `2` | pull requests | `view` a PR → `i` info (description, checks) · `d` diff (`j`/`k` files) · `v` reviews · `g` ask Claude to review · `a` approve · `x` request changes · `c` comment · `m` merge · `z` close · `f` mine/all · `b` back |
+| `2` | pull requests | `view` a PR → `i` info (description, checks) · `d` diff (`j`/`k` files, `l` comment on a line) · `v` reviews and inline threads · `g` ask Claude to review · `o` checkout · `a` approve · `x` request changes · `c` comment · `m` merge · `z` close · `f` mine/all · `b` back |
 
 Merge and close ask for confirmation first.
+
+**Review threads** — inline review comments show with `path:line` under reviews; `l` on the diff tab posts one on the current file (`<line>: <text>`).
+
+**Checkout** — `o` runs `gh pr checkout`; the security row and heat strip then describe that PR.
+
+**Avatars** — the PR author's GitHub avatar in the pane header on kitty and Ghostty; `@login` elsewhere.
+
+**Merge streak** — clean merges (no findings in the diff) count up: `🔥7` in the pane header, longer confetti. A merge with findings resets it.
 
 **`/prdeck`** — prints findings and open PRs, and hands the model the raw lists as context. Follow with "fix the high ones" or "summarise PR #42".
 
@@ -52,6 +66,7 @@ Merge and close ask for confirmation first.
 | Base branch | auto | `origin/main`, `origin/master`, `main`, `master` in that order |
 | Only my PRs | on | off lists every open PR |
 | PR poll interval | 60 s | minimum 15 |
+| Haiku triage | on | rate hits with Haiku, drop false positives |
 | Extra rules file | — | path to a JSON array: `[{ "name": "todo", "pattern": "TODO", "flags": "i", "sev": "low" }]`, merged with the built-ins |
 
 ## How it works

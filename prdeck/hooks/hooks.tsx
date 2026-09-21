@@ -1,11 +1,11 @@
 import type { EngineInterface, Register } from "claude-code";
-import { parseDiff, capHunks, checkSummary, checkGlyphs, decision, type Pr, type PrDetail, type DiffFile } from "./pr.ts";
+import { parseDiff, capHunks, checkSummary, checkGlyphs, decision, type Pr, type PrDetail, type DiffFile, type ReviewComment } from "./pr.ts";
 import { BUILTIN, compileRules, type Rule, type Sev } from "./rules.ts";
 import { heatStrip, confetti, SPIN } from "./raster.ts";
 
 const PANE = "pr-security";
 // filled from plugin.json userConfig at register()
-let cfg = { guard: "warn" as "warn" | "deny" | "off", base: "", mine: true, pollSeconds: 60, rulesFile: "" };
+let cfg = { guard: "warn" as "warn" | "deny" | "off", base: "", mine: true, pollSeconds: 60, rulesFile: "", triage: true };
 // ponytail: regex scan; swap in $.model when noise gets loud
 let RULES: Rule[] = compileRules(BUILTIN).rules;
 
@@ -13,7 +13,7 @@ let RULES: Rule[] = compileRules(BUILTIN).rules;
 const SKIP = /(^|\/)(node_modules|dist|build|vendor|tests?|__tests__|\.git)\/|(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|go\.sum)$|\.(md|min\.js|map|snap|svg|lock)$/;
 
 export type Finding = { file: string; line: number; rule: string; sev: Sev; text: string };
-type State = { base: string; files: number; findings: Finding[]; error?: string; scanning: boolean; at: number; prev: number; churn: { file: string; lines: number }[]; fx: number };
+type State = { base: string; files: number; findings: Finding[]; error?: string; scanning: boolean; at: number; prev: number; churn: { file: string; add: number; del: number; lines: number }[]; fx: number };
 const FX_FRAMES = 15; // 1.5 s of confetti at the 100 ms tick
 
 let state: State = { base: "?", files: 0, findings: [], scanning: false, at: 0, prev: 0, churn: [], fx: 0 };
@@ -23,7 +23,16 @@ let filter = "all";
 
 // line-number free so the ignore survives edits above it
 export const ignoreKey = (f: Finding) => `${f.file}:${f.rule}:${f.text}`;
-const live = () => state.findings.filter(f => !ignored.has(ignoreKey(f)));
+// haiku verdicts by finding key: fp drops the finding, else its severity wins over the rule's
+type Verdict = { sev: Sev | "fp"; why: string };
+let triage = new Map<string, Verdict>();
+const verdict = (f: Finding): Finding | null => {
+  const v = triage.get(ignoreKey(f));
+  return !v ? f : v.sev === "fp" ? null : { ...f, sev: v.sev };
+};
+const live = () => state.findings.filter(f => !ignored.has(ignoreKey(f))).map(verdict).filter((f): f is Finding => f !== null);
+let streak = 0;
+const avatars = new Map<string, string>(); // login -> png path, fetched once per session
 const SEV_COLOR: Record<Sev, string> = { high: "error", med: "warning", low: "text" };
 
 export function scanText(file: string, text: string, startLine = 1): Finding[] {
@@ -69,6 +78,32 @@ async function loadRules($: EngineInterface): Promise<void> {
   }
 }
 
+async function runTriage($: EngineInterface): Promise<void> {
+  if (!cfg.triage) return;
+  const todo = state.findings.filter(f => !triage.has(ignoreKey(f))).slice(0, 40);
+  if (!todo.length) return;
+  const list = todo.map((f, i) => `${i}. [${f.rule}] ${f.file}:${f.line}: ${f.text.slice(0, 200)}`).join("\n");
+  try {
+    const reply = await $.model.complete({
+      model: "haiku", maxTokens: 2000,
+      system: "You triage regex hits from a security scanner. Answer ONLY a JSON array of {\"i\":number,\"sev\":\"high\"|\"med\"|\"low\"|\"fp\",\"why\":string}. fp = not a real issue (test fixture, comment, safe usage, placeholder). why is at most 8 words.",
+      prompt: list,
+    });
+    const arr = JSON.parse(reply.slice(reply.indexOf("["), reply.lastIndexOf("]") + 1)) as { i: number; sev: string; why: string }[];
+    for (const v of arr) {
+      const f = todo[v.i];
+      const sev = (["high", "med", "low", "fp"] as const).find(x => x === v.sev);
+      if (f && sev) triage.set(ignoreKey(f), { sev, why: String(v.why ?? "").slice(0, 60) });
+    }
+    if (triage.size > 500) triage = new Map([...triage].slice(-500));
+    await $.store.set("triage", [...triage]);
+    $.ui.invalidate("ui.render");
+    $.ui.invalidate("prompt.context");
+  } catch (err) {
+    $.ui.log(`prdeck triage: ${String((err as Error).message ?? err).split("\n")[0]}`, { to: "debug" });
+  }
+}
+
 async function scan($: EngineInterface): Promise<void> {
   if (state.scanning) return;
   state.scanning = true;
@@ -83,14 +118,16 @@ async function scan($: EngineInterface): Promise<void> {
     const numstat = await $.process.run(["git", "diff", "--numstat", mb.stdout.trim()]);
     const churn = numstat.stdout.split("\n").filter(Boolean).map(l => {
       const [a = "0", d = "0", ...rest] = l.split("\t");
-      return { file: rest.join("\t"), lines: (Number(a) || 0) + (Number(d) || 0) };
+      return { file: rest.join("\t"), add: Number(a) || 0, del: Number(d) || 0, lines: (Number(a) || 0) + (Number(d) || 0) };
     }).filter(f => !SKIP.test(f.file));
     const untracked = (await $.process.run(["git", "ls-files", "--others", "--exclude-standard"])).stdout.split("\n").filter(f => f && !SKIP.test(f));
     for (const f of untracked) r.findings.push(...scanText(f, await $.fs.read(f)));
-    for (const f of untracked) churn.push({ file: f, lines: (await $.fs.read(f)).split("\n").length });
+    for (const f of untracked) { const n = (await $.fs.read(f)).split("\n").length; churn.push({ file: f, add: n, del: 0, lines: n }); }
     const wasDirty = live().length > 0;
     state = { ...state, base, files: r.files + untracked.length, findings: r.findings, churn, error: undefined };
-    if (wasDirty && live().length === 0) state.fx = FX_FRAMES; // just went clean: party
+    if (wasDirty && live().length === 0) state.fx = FX_FRAMES + Math.min(streak, 10) * 3; // just went clean: party, longer on a streak
+    $.ui.invalidate("prompt.context");
+    void runTriage($);
   } catch (err) {
     const error = String((err as Error).message ?? err).split("\n")[0] ?? "";
     if (error !== state.error) $.ui.log(`prdeck: ${error}`, { to: "debug" });
@@ -133,8 +170,8 @@ const PR_PANE = "prs";
 const MAX_DIFF_LINES = 4000; // past this, gh pr diff runs into the timeout; show a hint instead
 type PrState = {
   repo?: string; list: Pr[]; seen: Set<number>; error?: string; rawError?: string; busy?: string; diffNote?: string;
-  selected?: number; detail?: PrDetail; diff?: DiffFile[]; diffText?: string; fileIdx: number;
-  tab: "info" | "diff" | "reviews"; compose?: "comment" | "changes"; mine: boolean; bodyChunks: number;
+  selected?: number; detail?: PrDetail; diff?: DiffFile[]; diffText?: string; threads?: ReviewComment[]; fileIdx: number;
+  tab: "info" | "diff" | "reviews"; compose?: "comment" | "changes" | "line"; mine: boolean; bodyChunks: number;
 };
 let pr: PrState = { list: [], seen: new Set(), fileIdx: 0, tab: "info", mine: true, bodyChunks: 1 };
 const BODY_CHUNK = 6; // lines of description shown per "more"
@@ -182,15 +219,45 @@ async function fetchDetail($: EngineInterface, n: number): Promise<void> {
     const p = pr.list.find(x => x.number === n);
     const lines = (p?.additions ?? 0) + (p?.deletions ?? 0);
     const tooBig = lines > MAX_DIFF_LINES;
-    const [view, diffText] = await Promise.all([
-      gh($, ["pr", "view", String(n), "--json", "body,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments,files"]),
+    const [view, diffText, threads] = await Promise.all([
+      gh($, ["pr", "view", String(n), "--json", "body,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments,files,headRefOid"]),
       tooBig ? Promise.resolve("") : gh($, ["pr", "diff", String(n)], 60_000),
+      gh($, ["api", `repos/${pr.repo}/pulls/${n}/comments`, "--paginate"]).then(t => JSON.parse(t) as ReviewComment[]).catch(() => [] as ReviewComment[]),
     ]);
-    pr = { ...pr, detail: JSON.parse(view), diff: parseDiff(diffText), diffText, busy: undefined,
+    pr = { ...pr, detail: JSON.parse(view), diff: parseDiff(diffText), diffText, threads, busy: undefined,
       diffNote: tooBig ? `diff too large (${lines} lines) — run: gh pr diff ${n}` : undefined };
+    if (p && !avatars.has(p.author.login)) void fetchAvatar($, p.author.login);
   } catch (err) {
     pr = { ...pr, busy: undefined, error: String((err as Error).message ?? err) };
   }
+  $.ui.invalidate("ui.render");
+}
+
+async function fetchAvatar($: EngineInterface, login: string): Promise<void> {
+  const file = `/tmp/prdeck-avatar-${login}.png`;
+  const r = await $.process.run(["curl", "-sL", "-o", file, `https://github.com/${login}.png?size=64`]).catch(() => ({ exitCode: 1 }));
+  if (r.exitCode === 0) { avatars.set(login, file); $.ui.invalidate("ui.render"); }
+}
+
+async function lineComment($: EngineInterface, n: number, path: string, spec: string): Promise<void> {
+  const m = /^\s*(\d+)\s*[:\s]\s*(.+)$/s.exec(spec);
+  if (!m || !pr.detail) { $.ui.toast("format: <line>: <comment>"); return; }
+  try {
+    await gh($, ["api", "-X", "POST", `repos/${pr.repo}/pulls/${n}/comments`, "-f", `body=${m[2]}`, "-f", `path=${path}`,
+      "-F", `line=${m[1]}`, "-f", "side=RIGHT", "-f", `commit_id=${pr.detail.headRefOid}`]);
+    $.ui.toast(`#${n}: comment on ${path}:${m[1]} posted`);
+    await fetchDetail($, n);
+  } catch (err) {
+    $.ui.toast(`comment failed: ${String((err as Error).message ?? err)}`);
+  }
+}
+
+async function checkout($: EngineInterface, n: number): Promise<void> {
+  pr = { ...pr, busy: "checkout" };
+  $.ui.invalidate("ui.render");
+  try { await gh($, ["pr", "checkout", String(n)]); $.ui.toast(`checked out #${n}`); void scan($); }
+  catch (err) { $.ui.toast(`checkout failed: ${String((err as Error).message ?? err)}`); }
+  pr = { ...pr, busy: undefined };
   $.ui.invalidate("ui.render");
 }
 
@@ -205,7 +272,12 @@ async function prAction($: EngineInterface, args: string[], label: string, confi
   $.ui.invalidate("ui.render");
   try {
     await gh($, ["pr", ...args, String(n)]);
-    $.ui.toast(`#${n}: ${label} done`);
+    if (label === "Merge") {
+      const clean = !pr.diffText || scanDiff(pr.diffText).findings.length === 0;
+      streak = clean ? streak + 1 : 0;
+      await $.store.set("streak", streak);
+      $.ui.toast(clean ? `#${n} merged clean — streak ${streak} 🔥` : `#${n} merged with findings — streak reset`);
+    } else $.ui.toast(`#${n}: ${label} done`);
   } catch (err) {
     $.ui.toast(`#${n}: ${label} failed: ${String((err as Error).message ?? err)}`);
   }
@@ -259,10 +331,13 @@ export const register: Register = (on, options) => {
     mine: options.mine !== false,
     pollSeconds: Math.max(15, Number(options.pollSeconds) || 60),
     rulesFile: typeof options.rulesFile === "string" ? options.rulesFile.trim() : "",
+    triage: options.triage !== false,
   };
   pr = { ...pr, mine: cfg.mine };
   on("session.start", async ($, e, next) => {
     ignored = new Set(((await $.store.get("ignored")) as string[] | undefined) ?? []);
+    triage = new Map(((await $.store.get("triage")) as [string, Verdict][] | undefined) ?? []);
+    streak = Number((await $.store.get("streak")) ?? 0) || 0;
     await loadRules($);
     await $.command.register({ name: "prdeck", description: "Security findings and open PRs, with the raw lists handed to the model." });
     void scan($);
@@ -286,6 +361,21 @@ export const register: Register = (on, options) => {
 
   on("tool.call", { tool: "Write" }, ($, e, next) => guard($, e.tool_use_id, e.file_path, e.content) ?? next(e));
   on("tool.call", { tool: "Edit" }, ($, e, next) => guard($, e.tool_use_id, e.file_path, e.new_string) ?? next(e));
+  on("tool.call", { tool: "Bash" }, ($, e, next) => {
+    if (cfg.guard === "off" || !/\bgit\s+(push|commit)\b/.test(e.command)) return next(e);
+    const high = live().filter(f => f.sev === "high");
+    if (!high.length) return next(e);
+    const msg = `⚠ prdeck: ${high.length} high finding${high.length === 1 ? "" : "s"} open (${high[0]!.file}:${high[0]!.line} ${high[0]!.rule})`;
+    $.ui.notice(e.tool_use_id, msg);
+    return cfg.guard === "deny" ? { deny: msg } : next(e);
+  });
+  on("prompt.context", async ($, e, next) => {
+    const fs = live();
+    if (!fs.length) return next(e);
+    const text = `prdeck security findings on this branch (do not add more; fix when touching these files):\n` +
+      fs.slice(0, 30).map(f => `- ${f.file}:${f.line} [${f.sev}] ${f.rule}`).join("\n");
+    return next({ ...e, blocks: [...e.blocks, { name: "prdeck", text }] });
+  });
 
   on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
     if (e.props.hasSurvey || e.surface !== "terminal") return next(e); // the band is terminal-only; narrows the table for Raster
@@ -295,9 +385,25 @@ export const register: Register = (on, options) => {
     const w = Math.max(1, e.props.bodyColumns - 2);
     const hotFiles = new Set(fs.map(f => f.file));
     const heat = state.churn.map(c => ({ lines: c.lines, hot: hotFiles.has(c.file) }));
+    const totals = state.churn.reduce((t, c) => ({ add: t.add + c.add, del: t.del + c.del }), { add: 0, del: 0 });
+    const totalsText = `${state.churn.length} files · +${totals.add}/−${totals.del}`;
+    const stripW = Math.max(1, w - totalsText.length - 2);
+    const hs = heatStrip(heat, stripW);
+    const hotList = state.churn.filter(c => hotFiles.has(c.file)).slice(0, 5);
     const strip = state.fx > 0
       ? <Raster key="fx" columns={w} rows={1} cells={confetti(w, FX_FRAMES - state.fx, FX_FRAMES)} />
-      : heat.length ? <Raster key="heat" columns={Math.min(w, heat.length)} rows={1} cells={heatStrip(heat, w)} /> : null;
+      : hs.columns ? (
+        <Box key="heat" flexDirection="column">
+          <Box gap={2}>
+            <Raster key="heatcells" columns={hs.columns} rows={1} cells={hs.cells} />
+            <Text dimColor>{totalsText}</Text>
+          </Box>
+          <Box display="none" hover={{ display: "flex" }} flexDirection="column">
+            {hotList.map(c => <Text key={`hot:${c.file}`} color="error" wrap="truncate">{`${c.file}  +${c.add}/−${c.del}`}</Text>)}
+            <Text dimColor>{"red finding · orange >100 lines · yellow >20 · green small · width ∝ churn"}</Text>
+          </Box>
+        </Box>
+      ) : null;
     const color = state.error ? "warning" : n ? "error" : "success";
     const delta = n - state.prev;
     const counts = sevCounts(fs).map(([s, c]) => `${c} ${s}`).join(" · ") || "0 findings";
@@ -382,7 +488,13 @@ export const register: Register = (on, options) => {
     );
     return (
       <Box flexDirection="column" width={w}>
-        <Box gap={1}><Text bold wrap="truncate">{`#${cur.number} ${cur.title}`}</Text>{busy}</Box>
+        <Box gap={1}>
+          {"Image" in els && avatars.has(cur.author.login)
+            ? <els.Image key="avatar" source={{ file: avatars.get(cur.author.login)!, format: "png" }} columns={4} rows={2} alt={`@${cur.author.login}`} />
+            : null}
+          <Text bold wrap="truncate">{`#${cur.number} ${cur.title}`}</Text>{busy}
+          {streak > 0 ? <Text color="warning">{`🔥${streak}`}</Text> : null}
+        </Box>
         <Text dimColor wrap="truncate">
 <Text color="cyan" bold>{cur.headRefName}</Text>{" → "}<Text color="cyan" bold>{cur.baseRefName}</Text>{`  ${decision(cur.reviewDecision)}`}
           {d ? `  ${d.mergeable.toLowerCase()}` : ""}
@@ -423,12 +535,19 @@ export const register: Register = (on, options) => {
               <Text wrap="truncate">{file ? `${pr.fileIdx + 1}/${pr.diff!.length} ${file.file}` : pr.diffNote ?? "no diff"}</Text>
               <Button key="next" plain dimColor hotkey="j" onPress={() => setPr({ fileIdx: Math.min((pr.diff?.length ?? 1) - 1, pr.fileIdx + 1) }, $)}>›</Button>
             </Box>
+            {file ? <Button key="linecomment" plain dimColor hotkey="l" onPress={() => setPr({ compose: "line" }, $)}>comment on line</Button> : null}
             {cap ? <Code format="diff" path={file!.file} source={cap.source} wrap="truncate-end" /> : null}
             {cap?.dropped ? <Text dimColor>{`… truncated, ${cap.dropped} more lines`}</Text> : null}
           </Box>
         ) : (
           <Box flexDirection="column" marginTop={1}>
-            {d.reviews.length + d.comments.length === 0 ? <Text dimColor>none</Text> : null}
+            {d.reviews.length + d.comments.length + (pr.threads?.length ?? 0) === 0 ? <Text dimColor>none</Text> : null}
+            {(pr.threads ?? []).map((t, i) => (
+              <Box key={`t:${i}`} flexDirection="column">
+                <Text bold>{`@${t.user.login} `}<Text color="cyan">{`${t.path}${t.line ? `:${t.line}` : ""}`}</Text></Text>
+                <Markdown text={t.body} />
+              </Box>
+            ))}
             {d.reviews.map((r, i) => (
               <Box key={`r:${i}`} flexDirection="column">
                 <Text bold>{`@${r.author.login} ${r.state.toLowerCase()} `}<Text dimColor>{r.submittedAt.slice(0, 10)}</Text></Text>
@@ -443,12 +562,17 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
         )}
-        {pr.compose && Input ? (
+        {pr.compose === "line" && Input && file ? (
+          <Input key="line" label={`${file.file} <line>: <comment>`} autoFocus
+            onSubmit={(v: string) => { setPr({ compose: undefined }, $); void lineComment($, cur.number, file.file, v); }} />
+        ) : null}
+        {pr.compose && pr.compose !== "line" && Input ? (
           <Input key="body" label={pr.compose === "changes" ? "request changes" : "comment"} autoFocus
             onSubmit={(v: string) => void prAction($, ["review", pr.compose === "changes" ? "--request-changes" : "--comment", "-b", v], pr.compose === "changes" ? "Request changes" : "Comment")} />
         ) : null}
         <Box gap={2} marginTop={1}>
           <Button key="claude" plain dimColor hotkey="g" onPress={() => fillReview($, cur.number, cur.title)}>ask claude</Button>
+          <Button key="checkout" plain dimColor hotkey="o" onPress={() => void checkout($, cur.number)}>checkout</Button>
           <Button key="approve" plain dimColor hotkey="a" onPress={() => void prAction($, ["review", "--approve"], "Approve")}>approve</Button>
           <Button key="changes" plain dimColor hotkey="x" onPress={() => setPr({ compose: "changes" }, $)}>request changes</Button>
           <Button key="comment" plain dimColor hotkey="c" onPress={() => setPr({ compose: "comment" }, $)}>comment</Button>
@@ -492,6 +616,7 @@ export const register: Register = (on, options) => {
                       <Text dimColor>{`L${f.line} `}</Text>
                       <Text color={SEV_COLOR[f.sev]}>{`[${f.sev}] `}</Text>
                       {`${f.rule}: ${f.text}`}
+                      {triage.get(k)?.why ? <Text dimColor>{`  — ${triage.get(k)!.why}`}</Text> : null}
                     </Text>
                   </Box>
                   <Box flexShrink={0} gap={1}>

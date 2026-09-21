@@ -10,18 +10,27 @@ export function pack(cells: Cell[]): string {
   return (new Uint8Array(words.buffer) as Uint8Array & { toBase64(): string }).toBase64();
 }
 
-// one cell per changed file: colour by churn, red when it holds a finding; buckets when files > columns
-export function heatStrip(files: { lines: number; hot: boolean }[], columns: number): string {
-  const n = Math.min(columns, files.length);
-  const per = files.length / n;
+export type HeatFile = { lines: number; hot: boolean };
+const churnColor = (lines: number, hot: boolean) => hot ? 0xef4444 : lines < 20 ? 0x22c55e : lines < 100 ? 0xeab308 : 0xf97316;
+
+// A treemap strip: hot files first, then by churn; each file's width is proportional to its
+// lines changed (at least one cell); a blank separator between files when there is room.
+export function heatStrip(files: HeatFile[], columns: number): { cells: string; columns: number } {
+  const sorted = [...files].sort((a, b) => Number(b.hot) - Number(a.hot) || b.lines - a.lines);
+  const n = Math.min(sorted.length, columns);
+  const shown = sorted.slice(0, n);
+  const gaps = n * 2 - 1 <= columns ? n - 1 : 0;
+  const room = columns - gaps;
+  const total = shown.reduce((s, f) => s + Math.max(1, f.lines), 0) || 1;
+  // proportional widths, min 1, then trim the widest until it fits
+  const widths = shown.map(f => Math.max(1, Math.round((Math.max(1, f.lines) / total) * room)));
+  while (widths.reduce((a, b) => a + b, 0) > room) widths[widths.indexOf(Math.max(...widths))]!--;
   const cells: Cell[] = [];
-  for (let i = 0; i < n; i++) {
-    const bucket = files.slice(Math.floor(i * per), Math.max(Math.floor(i * per) + 1, Math.floor((i + 1) * per)));
-    const lines = Math.max(...bucket.map(f => f.lines));
-    const hot = bucket.some(f => f.hot);
-    cells.push([BLOCK, hot ? 0xef4444 : lines < 20 ? 0x22c55e : lines < 100 ? 0xeab308 : 0xf97316]);
-  }
-  return pack(cells);
+  shown.forEach((f, i) => {
+    if (i && gaps) cells.push([SPACE, DEFAULT]);
+    for (let k = 0; k < widths[i]!; k++) cells.push([BLOCK, churnColor(f.lines, f.hot)]);
+  });
+  return { cells: pack(cells), columns: cells.length };
 }
 
 const CONFETTI = [0xef4444, 0xf97316, 0xeab308, 0x22c55e, 0x3b82f6, 0xa855f7, 0xec4899];

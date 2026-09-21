@@ -1,6 +1,7 @@
 import type { EngineInterface, Register } from "claude-code";
 import { parseDiff, capHunks, checkSummary, checkGlyphs, decision, type Pr, type PrDetail, type DiffFile } from "./pr.ts";
 import { BUILTIN, compileRules, type Rule, type Sev } from "./rules.ts";
+import { heatStrip, confetti, SPIN } from "./raster.ts";
 
 const PANE = "pr-security";
 // filled from plugin.json userConfig at register()
@@ -12,9 +13,11 @@ let RULES: Rule[] = compileRules(BUILTIN).rules;
 const SKIP = /(^|\/)(node_modules|dist|build|vendor|tests?|__tests__|\.git)\/|(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|go\.sum)$|\.(md|min\.js|map|snap|svg|lock)$/;
 
 export type Finding = { file: string; line: number; rule: string; sev: Sev; text: string };
-type State = { base: string; files: number; findings: Finding[]; error?: string; scanning: boolean; at: number; prev: number };
+type State = { base: string; files: number; findings: Finding[]; error?: string; scanning: boolean; at: number; prev: number; churn: { file: string; lines: number }[]; fx: number };
+const FX_FRAMES = 30; // 1 s of confetti at the band's 30 fps cap
 
-let state: State = { base: "?", files: 0, findings: [], scanning: false, at: 0, prev: 0 };
+let state: State = { base: "?", files: 0, findings: [], scanning: false, at: 0, prev: 0, churn: [], fx: 0 };
+let spin = 0;
 let ignored = new Set<string>();
 let filter = "all";
 
@@ -77,9 +80,17 @@ async function scan($: EngineInterface): Promise<void> {
     // working tree vs merge-base: staged, unstaged and committed changes alike
     const { stdout } = await $.process.run(["git", "diff", "--unified=0", mb.stdout.trim()]);
     const r = scanDiff(stdout);
+    const numstat = await $.process.run(["git", "diff", "--numstat", mb.stdout.trim()]);
+    const churn = numstat.stdout.split("\n").filter(Boolean).map(l => {
+      const [a = "0", d = "0", ...rest] = l.split("\t");
+      return { file: rest.join("\t"), lines: (Number(a) || 0) + (Number(d) || 0) };
+    }).filter(f => !SKIP.test(f.file));
     const untracked = (await $.process.run(["git", "ls-files", "--others", "--exclude-standard"])).stdout.split("\n").filter(f => f && !SKIP.test(f));
     for (const f of untracked) r.findings.push(...scanText(f, await $.fs.read(f)));
-    state = { ...state, base, files: r.files + untracked.length, findings: r.findings, error: undefined };
+    for (const f of untracked) churn.push({ file: f, lines: (await $.fs.read(f)).split("\n").length });
+    const wasDirty = live().length > 0;
+    state = { ...state, base, files: r.files + untracked.length, findings: r.findings, churn, error: undefined };
+    if (wasDirty && live().length === 0 && churn.length > 0) state.fx = FX_FRAMES; // just went clean: party
   } catch (err) {
     const error = String((err as Error).message ?? err).split("\n")[0] ?? "";
     if (error !== state.error) $.ui.log(`prdeck: ${error}`, { to: "debug" });
@@ -257,6 +268,12 @@ export const register: Register = (on, options) => {
     void scan($);
     void fetchList($);
     $.clock.every(30_000, () => void scan($));
+    $.clock.every(200, () => { // pending-check spinner, confetti frames
+      const pending = pr.list.some(p => checkSummary(p.statusCheckRollup).pending);
+      if (pending) spin = (spin + 1) % SPIN.length;
+      if (state.fx > 0) state.fx--;
+      if (pending || state.fx > 0) $.ui.invalidate("ui.render");
+    });
     $.clock.every(cfg.pollSeconds * 1000, () => void fetchList($));
     return next(e);
   });
@@ -268,10 +285,16 @@ export const register: Register = (on, options) => {
   on("tool.call", { tool: "Edit" }, ($, e, next) => guard($, e.tool_use_id, e.file_path, e.new_string) ?? next(e));
 
   on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
-    if (e.props.hasSurvey) return next(e);
-    const { Box, Text, Button } = $.ui.resolve(e);
+    if (e.props.hasSurvey || e.surface !== "terminal") return next(e); // the band is terminal-only; narrows the table for Raster
+    const { Box, Text, Button, Raster } = $.ui.resolve(e);
     const fs = live();
     const n = fs.length;
+    const w = Math.max(1, e.props.bodyColumns - 2);
+    const hotFiles = new Set(fs.map(f => f.file));
+    const heat = state.churn.map(c => ({ lines: c.lines, hot: hotFiles.has(c.file) }));
+    const strip = state.fx > 0
+      ? <Raster key="fx" columns={w} rows={1} cells={confetti(w, FX_FRAMES - state.fx, FX_FRAMES)} />
+      : heat.length ? <Raster key="heat" columns={Math.min(w, heat.length)} rows={1} cells={heatStrip(heat, w)} /> : null;
     const color = state.error ? "warning" : n ? "error" : "success";
     const delta = n - state.prev;
     const counts = sevCounts(fs).map(([s, c]) => `${c} ${s}`).join(" · ") || "0 findings";
@@ -282,15 +305,22 @@ export const register: Register = (on, options) => {
     const prRow = pr.error ? (
       <Box gap={1}><Text color="warning" bold>⇄</Text><Text dimColor wrap="truncate">{`PRs: ${pr.error}`}</Text></Box>
     ) : !pr.repo ? null : (
+      <Box key="prrow" flexDirection="column">
       <Box gap={1}>
         <Text color={prColor} bold>⇄</Text>
         <Text color={prColor} wrap="truncate">
           {newest
-            ? `${pr.list.length} PR${pr.list.length === 1 ? "" : "s"} · #${newest.number} ${newest.title} · ${checkGlyphs(newest.statusCheckRollup)} · ${decision(newest.reviewDecision)}`
+            ? `${pr.list.length} PR${pr.list.length === 1 ? "" : "s"} · #${newest.number} ${newest.title} · ${checkGlyphs(newest.statusCheckRollup).replace("●", SPIN[spin]!)} · ${decision(newest.reviewDecision)}`
             : "no open PRs"}
         </Text>
         {unseen > 0 ? <Text color="error" bold>{`(+${unseen} new)`}</Text> : null}
         <Button key="prs" plain dimColor hotkey="2" onPress={() => void togglePrPane($)}>PRs</Button>
+      </Box>
+      <Box display="none" hover={{ display: "flex" }} flexDirection="column" paddingLeft={2}>
+        {pr.list.slice(0, 3).map(p => (
+          <Text key={`hv:${p.number}`} dimColor wrap="truncate">{`#${p.number} ${p.title}  ${p.headRefName}→${p.baseRefName}  ${checkGlyphs(p.statusCheckRollup)}  ${decision(p.reviewDecision)}`}</Text>
+        ))}
+      </Box>
       </Box>
     );
     return (
@@ -303,6 +333,7 @@ export const register: Register = (on, options) => {
         {delta > 0 ? <Text color="error" bold>{`(+${delta})`}</Text> : null}
         <Button key="details" plain dimColor hotkey="1" onPress={() => void togglePane($)}>details</Button>
       </Box>
+      {strip ? <Box paddingLeft={2}>{strip}</Box> : null}
       {prRow}
       </Box>
     );

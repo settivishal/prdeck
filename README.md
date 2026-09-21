@@ -4,7 +4,8 @@ A Claude Code mod that puts your pull requests and security findings above the p
 
 ```
 ● security  2 high · 1 low  (+1)                        1: details
-⇄ 3 PRs · #42 fix login · ✓4 ✗1 · changes requested  (+1 new)   2: PRs
+  ██████████████                     ← heat strip: one cell per changed file
+⇄ 3 PRs · #42 fix login · ✓4 ◐1 · changes requested  (+1 new)   2: PRs
 ```
 
 ## Install
@@ -19,6 +20,8 @@ Requires Claude Code 2.1.278+ and, for the PR row, [`gh`](https://cli.github.com
 ## What it does
 
 **Security row** — scans your branch against its base (merge-base, working tree and untracked files included) for secrets, private keys, `eval`, shell exec, SQL string concat, unsafe deserialization, `innerHTML`, TLS verification off, `chmod 777`, plain `http://`. Colour is the worst severity; `(+N)` means the last turn added findings.
+
+**Heat strip** — one cell per changed file, green → yellow → orange by churn, red where a finding sits. When your branch goes from findings to clean: one second of confetti. Pending checks spin. Hover `⇄` (fullscreen terminal) to peek at the top three PRs without opening the pane.
 
 **Write guard** — when Claude is about to `Write` or `Edit` a line that hits a rule, the permission dialog shows `⚠ prdeck: eval at line 3`. Set it to `deny` to block the call outright.
 

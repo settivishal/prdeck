@@ -62,6 +62,7 @@ Merge and close ask for confirmation first.
 
 | setting | default | |
 |---|---|---|
+| Security scanning | on | off hides the security row, strip and pane; PR feed stays |
 | Write/Edit guard | `warn` | `warn` · `deny` · `off` |
 | Base branch | auto | `origin/main`, `origin/master`, `main`, `master` in that order |
 | Only my PRs | on | off lists every open PR |

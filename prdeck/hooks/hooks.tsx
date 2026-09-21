@@ -2,10 +2,9 @@ import type { EngineInterface, Register } from "claude-code";
 import { parseDiff, capHunks, checkSummary, checkGlyphs, decision, type Pr, type PrDetail, type DiffFile, type ReviewComment } from "./pr.ts";
 import { BUILTIN, compileRules, type Rule, type Sev } from "./rules.ts";
 import { heatStrip, confetti, SPIN } from "./raster.ts";
+import { cfg, readConfig } from "./config.ts";
 
 const PANE = "pr-security";
-// filled from plugin.json userConfig at register()
-let cfg = { guard: "warn" as "warn" | "deny" | "off", base: "", mine: true, pollSeconds: 60, rulesFile: "", triage: true };
 // ponytail: regex scan; swap in $.model when noise gets loud
 let RULES: Rule[] = compileRules(BUILTIN).rules;
 
@@ -156,7 +155,7 @@ function fillFix($: EngineInterface, f: Finding): void {
 }
 
 function guard($: EngineInterface, id: string, file: string, text: string): { deny: string } | undefined {
-  if (cfg.guard === "off" || SKIP.test(file)) return;
+  if (!cfg.security || cfg.guard === "off" || SKIP.test(file)) return;
   const hits = scanText(file, text);
   if (!hits.length) return;
   const h = hits[0]!;
@@ -302,8 +301,8 @@ function fillReview($: EngineInterface, n: number, title: string): void {
 
 // 4: /prdeck report: what the person sees, and the raw list only the model reads
 function report(): { text: string; context: string[] } {
-  const fs = live();
-  const lines = [`security: ${sevCounts(fs).map(([s, c]) => `${c} ${s}`).join(", ") || "clean"} (vs ${state.base})`];
+  const fs = cfg.security ? live() : [];
+  const lines = cfg.security ? [`security: ${sevCounts(fs).map(([s, c]) => `${c} ${s}`).join(", ") || "clean"} (vs ${state.base})`] : [];
   for (const f of fs.slice(0, 15)) lines.push(`  ${f.file}:${f.line} [${f.sev}] ${f.rule}`);
   if (fs.length > 15) lines.push(`  … ${fs.length - 15} more`);
   lines.push(pr.repo ? `PRs (${pr.mine ? "mine" : "all"}): ${pr.list.length} open` : "PRs: no GitHub remote");
@@ -325,24 +324,19 @@ const sevCounts = (fs: Finding[]) => (["high", "med", "low"] as Sev[])
   .filter(([, n]) => n > 0);
 
 export const register: Register = (on, options) => {
-  cfg = {
-    guard: (["warn", "deny", "off"] as const).find(g => g === options.guard) ?? "warn",
-    base: typeof options.base === "string" ? options.base.trim() : "",
-    mine: options.mine !== false,
-    pollSeconds: Math.max(15, Number(options.pollSeconds) || 60),
-    rulesFile: typeof options.rulesFile === "string" ? options.rulesFile.trim() : "",
-    triage: options.triage !== false,
-  };
+  readConfig(options);
   pr = { ...pr, mine: cfg.mine };
   on("session.start", async ($, e, next) => {
     ignored = new Set(((await $.store.get("ignored")) as string[] | undefined) ?? []);
     triage = new Map(((await $.store.get("triage")) as [string, Verdict][] | undefined) ?? []);
     streak = Number((await $.store.get("streak")) ?? 0) || 0;
-    await loadRules($);
     await $.command.register({ name: "prdeck", description: "Security findings and open PRs, with the raw lists handed to the model." });
-    void scan($);
+    if (cfg.security) {
+      await loadRules($);
+      void scan($);
+      $.clock.every(30_000, () => void scan($));
+    }
     void fetchList($);
-    $.clock.every(30_000, () => void scan($));
     let tick = 0;
     $.clock.every(100, () => { // pending-check spinner (every 2nd tick), confetti frames
       tick++;
@@ -357,12 +351,12 @@ export const register: Register = (on, options) => {
   });
   on("command.run", { command: "prdeck" }, () => report());
   on("turn.start", ($, e, next) => { state.prev = live().length; return next(e); });
-  on("turn.complete", async ($, e, next) => { void scan($); void fetchList($); return next(e); });
+  on("turn.complete", async ($, e, next) => { if (cfg.security) void scan($); void fetchList($); return next(e); });
 
   on("tool.call", { tool: "Write" }, ($, e, next) => guard($, e.tool_use_id, e.file_path, e.content) ?? next(e));
   on("tool.call", { tool: "Edit" }, ($, e, next) => guard($, e.tool_use_id, e.file_path, e.new_string) ?? next(e));
   on("tool.call", { tool: "Bash" }, ($, e, next) => {
-    if (cfg.guard === "off" || !/\bgit\s+(push|commit)\b/.test(e.command)) return next(e);
+    if (!cfg.security || cfg.guard === "off" || !/\bgit\s+(push|commit)\b/.test(e.command)) return next(e);
     const high = live().filter(f => f.sev === "high");
     if (!high.length) return next(e);
     const msg = `⚠ prdeck: ${high.length} high finding${high.length === 1 ? "" : "s"} open (${high[0]!.file}:${high[0]!.line} ${high[0]!.rule})`;
@@ -370,7 +364,7 @@ export const register: Register = (on, options) => {
     return cfg.guard === "deny" ? { deny: msg } : next(e);
   });
   on("prompt.context", async ($, e, next) => {
-    const fs = live();
+    const fs = cfg.security ? live() : [];
     if (!fs.length) return next(e);
     const text = `prdeck security findings on this branch (do not add more; fix when touching these files):\n` +
       fs.slice(0, 30).map(f => `- ${f.file}:${f.line} [${f.sev}] ${f.rule}`).join("\n");
@@ -432,7 +426,7 @@ export const register: Register = (on, options) => {
       </Box>
       </Box>
     );
-    return (
+    const secRows = !cfg.security ? null : (
       <Box flexDirection="column">
       <Box gap={1}>
         <Text color={color} bold>{n ? "●" : "○"}</Text>
@@ -443,9 +437,9 @@ export const register: Register = (on, options) => {
         <Button key="details" plain dimColor hotkey="1" onPress={() => void togglePane($)}>details</Button>
       </Box>
       {strip ? <Box paddingLeft={2}>{strip}</Box> : null}
-      {prRow}
       </Box>
     );
+    return <Box flexDirection="column">{secRows}{prRow}</Box>;
   });
 
   on("ui.render", { component: "Pane" }, ($, e, next) => {
@@ -584,7 +578,7 @@ export const register: Register = (on, options) => {
   });
 
   on("ui.render", { component: "Pane" }, ($, e, next) => {
-    if (e.requestId !== PANE) return next(e);
+    if (e.requestId !== PANE || !cfg.security) return next(e);
     const els = $.ui.resolve(e);
     const { Box, Text, Button } = els;
     const Select = "Select" in els ? els.Select : null; // mobile has no Select

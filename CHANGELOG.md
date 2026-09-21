@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.10.1 — 2026-09-21
+- fix: the band composes with the plugins beneath (next(e)) so tamaclaude and others draw too
+
 ## 0.10.0 — 2026-09-21
 - q on a PR and /prdeck qr <url> draw a scannable QR code in a pane
 

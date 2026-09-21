@@ -438,7 +438,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>{label}</Text>
           </Box>
           <Box display="none" hover={{ display: "flex" }} flexDirection="column">
-            {hover.map(h => <Text key={h.key} color={h.color} wrap="truncate">{h.text}</Text>)}
+            {hover.map(hv => <Text key={hv.key} color={hv.color} wrap="truncate">{hv.text}</Text>)}
             <Text dimColor>{legend}</Text>
           </Box>
         </Box>

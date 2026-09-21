@@ -8,7 +8,7 @@
       "name": "prdeck",
       "source": "./prdeck",
       "description": "PR feed, review pane and security checks above the Claude Code prompt",
-      "version": "0.8.1"
+      "version": "0.9.0"
     }
   ],
   "description": "prdeck: pull requests and security findings above the Claude Code prompt"

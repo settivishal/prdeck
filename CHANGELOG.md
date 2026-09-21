@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0 — 2026-09-21
+- strip cycles churn / ci runs / session timeline with 3
+- Strip mode setting picks the start view
+
 ## 0.8.1 — 2026-09-21
 - release script: scripts/release.sh does bump, changelog, checks, tag, release, update
 

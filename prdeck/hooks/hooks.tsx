@@ -3,6 +3,7 @@ import { parseDiff, capHunks, checkSummary, checkGlyphs, decision, type Pr, type
 import { BUILTIN, compileRules, type Rule, type Sev } from "./rules.ts";
 import { heatStrip, confetti, dotRow, DOT, SPIN } from "./raster.ts";
 import { cfg, readConfig, STRIP_MODES, type StripMode } from "./config.ts";
+import { qrRaster } from "./qr.ts";
 
 const PANE = "pr-security";
 // ponytail: regex scan; swap in $.model when noise gets loud
@@ -173,11 +174,13 @@ function guard($: EngineInterface, id: string, file: string, text: string): { de
 
 // ---------- PR feed (gh) ----------
 const PR_PANE = "prs";
+const QR_PANE = "qr";
+let qrText = "";
 const MAX_DIFF_LINES = 4000; // past this, gh pr diff runs into the timeout; show a hint instead
 type PrState = {
   repo?: string; list: Pr[]; seen: Set<number>; error?: string; rawError?: string; busy?: string; diffNote?: string;
   selected?: number; detail?: PrDetail; diff?: DiffFile[]; diffText?: string; threads?: ReviewComment[]; fileIdx: number;
-  tab: "info" | "diff" | "reviews"; compose?: "comment" | "changes" | "line"; mine: boolean; bodyChunks: number;
+  tab: "info" | "diff" | "reviews" | "qr"; compose?: "comment" | "changes" | "line"; mine: boolean; bodyChunks: number;
 };
 let pr: PrState = { list: [], seen: new Set(), fileIdx: 0, tab: "info", mine: true, bodyChunks: 1 };
 const BODY_CHUNK = 6; // lines of description shown per "more"
@@ -368,7 +371,13 @@ export const register: Register = (on, options) => {
     $.clock.every(cfg.pollSeconds * 1000, () => void fetchList($));
     return next(e);
   });
-  on("command.run", { command: "prdeck" }, () => report());
+  on("command.run", { command: "prdeck" }, async ($, e, next) => {
+    const m = /^\s*qr\s+(\S.*)$/.exec(e.args);
+    if (!m) return report();
+    qrText = m[1]!.trim();
+    await $.ui.open({ id: QR_PANE, title: "QR", focus: true, closeOnEscape: true });
+    return { text: qrText.length > 106 ? `too long for a QR (${qrText.length} > 106 chars)` : `QR for ${qrText} — Esc closes` };
+  });
   on("turn.start", ($, e, next) => { state.prev = live().length; cur = { edits: 0, tests: 0, aborted: false }; return next(e); });
   on("turn.complete", async ($, e, next) => {
     turns.push({ ...cur, aborted: e.isAborted || e.reason === "refusal" });
@@ -489,6 +498,18 @@ export const register: Register = (on, options) => {
   });
 
   on("ui.render", { component: "Pane" }, ($, e, next) => {
+    if (e.requestId !== QR_PANE) return next(e);
+    const els = $.ui.resolve(e);
+    const q = "Raster" in els ? qrRaster(qrText) : null;
+    return (
+      <els.Box flexDirection="column">
+        {q && "Raster" in els ? <els.Raster key="qr" columns={q.columns} rows={q.rows} cells={q.cells} /> : null}
+        <els.Text dimColor wrap="truncate">{q ? qrText : `cannot draw: ${qrText.length > 106 ? "too long" : "terminal only"} — ${qrText}`}</els.Text>
+      </els.Box>
+    );
+  });
+
+  on("ui.render", { component: "Pane" }, ($, e, next) => {
     if (e.requestId !== PR_PANE) return next(e);
     const els = $.ui.resolve(e);
     const { Box, Text, Button, Markdown, Code } = els;
@@ -540,10 +561,18 @@ export const register: Register = (on, options) => {
           {d ? `  ${d.mergeable.toLowerCase()}` : ""}
           {sec.length ? <Text color="error">{`  sec: ${sec.length}`}</Text> : ""}
         </Text>
-        <Box gap={2}>{tab("info", "i", "info")}{tab("diff", "d", "diff")}{tab("reviews", "v", "reviews")}
+        <Box gap={2}>{tab("info", "i", "info")}{tab("diff", "d", "diff")}{tab("reviews", "v", "reviews")}{tab("qr", "q", "qr")}
           <Button key="back" plain dimColor hotkey="b" onPress={() => setPr({ selected: undefined, detail: undefined, diff: undefined, compose: undefined }, $)}>back</Button>
         </Box>
-        {!d ? <Text dimColor>loading…</Text> : pr.tab === "info" ? (
+        {pr.tab === "qr" ? (() => {
+          const q = "Raster" in els ? qrRaster(cur.url) : null;
+          return (
+            <Box flexDirection="column" marginTop={1}>
+              {q && "Raster" in els ? <els.Raster key="qr" columns={q.columns} rows={q.rows} cells={q.cells} /> : <Text dimColor>{cur.url}</Text>}
+              <Text dimColor wrap="truncate">{`scan to open ${cur.url} on your phone`}</Text>
+            </Box>
+          );
+        })() : !d ? <Text dimColor>loading…</Text> : pr.tab === "info" ? (
           <Box flexDirection="column" marginTop={1}>
             {(() => {
               const lines = (d.body?.trim() || "_no description_").split("\n");

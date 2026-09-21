@@ -43,7 +43,7 @@ When the branch goes from findings to clean: confetti. Pending checks spin. Hove
 | key | pane | inside |
 |---|---|---|
 | `1` | findings | filter by rule · `fix` fills the prompt · `ignore` / `unignore` (persisted) · `r` rescan · `c` clear ignores |
-| `2` | pull requests | `view` a PR → `i` info (description, checks) · `d` diff (`j`/`k` files, `l` comment on a line) · `v` reviews and inline threads · `g` ask Claude to review · `o` checkout · `a` approve · `x` request changes · `c` comment · `m` merge · `z` close · `f` mine/all · `b` back |
+| `2` | pull requests | `view` a PR → `i` info (description, checks) · `d` diff (`j`/`k` files, `l` comment on a line) · `v` reviews and inline threads · `q` QR code of the PR · `g` ask Claude to review · `o` checkout · `a` approve · `x` request changes · `c` comment · `m` merge · `z` close · `f` mine/all · `b` back |
 
 Merge and close ask for confirmation first.
 
@@ -56,6 +56,8 @@ Merge and close ask for confirmation first.
 **Merge streak** — clean merges (no findings in the diff) count up: `🔥7` in the pane header, longer confetti. A merge with findings resets it.
 
 **`/prdeck`** — prints findings and open PRs, and hands the model the raw lists as context. Follow with "fix the high ones" or "summarise PR #42".
+
+**QR to phone** — `q` on a PR, or `/prdeck qr <url>` for any link up to 106 characters, draws a scannable QR in a pane. Built-in encoder, nothing sent anywhere; read it from the couch.
 
 **Big PRs** — past 4000 changed lines the diff tab shows a hint instead of fetching (`gh pr diff N`); info and reviews still load.
 

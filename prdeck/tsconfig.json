@@ -3,7 +3,7 @@
     "target": "es2023", "lib": ["es2023"], "types": [],
     "module": "esnext", "moduleResolution": "bundler",
     "strict": true, "noUncheckedIndexedAccess": true,
-    "noEmit": true, "skipLibCheck": true,
+    "noEmit": true, "allowImportingTsExtensions": true, "skipLibCheck": true,
     "jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "Fragment"
   },
   "include": ["../.claude/types", "hooks"]

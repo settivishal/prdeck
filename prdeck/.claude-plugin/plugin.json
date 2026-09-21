@@ -54,6 +54,17 @@
       "title": "Haiku triage",
       "description": "Ask Haiku to rate each regex hit high/med/low/false-positive. Cached; false positives disappear from the bar.",
       "default": true
+    },
+    "strip": {
+      "type": "string",
+      "title": "Strip mode",
+      "description": "What the bar under the security row shows at start: churn (files by lines changed), ci (workflow runs on this branch), timeline (one cell per turn). Press 3 to cycle.",
+      "options": [
+        "churn",
+        "ci",
+        "timeline"
+      ],
+      "default": "churn"
     }
   },
   "license": "MIT",

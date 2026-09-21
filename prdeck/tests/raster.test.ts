@@ -1,4 +1,4 @@
-import { pack, heatStrip, confetti } from "../hooks/raster.ts";
+import { pack, heatStrip, confetti, dotRow, DOT } from "../hooks/raster.ts";
 const eq = (got: unknown, want: unknown, what: string) => {
   if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`${what}\n got  ${JSON.stringify(got)}\n want ${JSON.stringify(want)}`);
 };
@@ -18,4 +18,9 @@ console.log("ok");
   const bytes = new Uint8Array(words.buffer);
   const native = (bytes as Uint8Array & { toBase64?: () => string }).toBase64?.call(bytes);
   if (native !== undefined) eq(pack([[0x2588, 0xff8800]]), native, "fallback matches native");
+}
+{
+  const r = dotRow([DOT.ok, DOT.fail, DOT.ok, DOT.pending], 3);
+  eq(r.columns, 3, "dotRow keeps newest");
+  eq(r.cells, pack([[0x2588, DOT.fail], [0x2588, DOT.ok], [0x2588, DOT.pending]]), "dotRow order");
 }

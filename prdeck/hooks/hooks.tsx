@@ -1,8 +1,8 @@
 import type { EngineInterface, Register } from "claude-code";
 import { parseDiff, capHunks, checkSummary, checkGlyphs, decision, type Pr, type PrDetail, type DiffFile, type ReviewComment } from "./pr.ts";
 import { BUILTIN, compileRules, type Rule, type Sev } from "./rules.ts";
-import { heatStrip, confetti, SPIN } from "./raster.ts";
-import { cfg, readConfig } from "./config.ts";
+import { heatStrip, confetti, dotRow, DOT, SPIN } from "./raster.ts";
+import { cfg, readConfig, STRIP_MODES, type StripMode } from "./config.ts";
 
 const PANE = "pr-security";
 // ponytail: regex scan; swap in $.model when noise gets loud
@@ -17,6 +17,13 @@ const FX_FRAMES = 15; // 1.5 s of confetti at the 100 ms tick
 
 let state: State = { base: "?", files: 0, findings: [], scanning: false, at: 0, prev: 0, churn: [], fx: 0 };
 let spin = 0;
+// strip modes: churn (treemap), ci (last runs on this branch), timeline (one cell per turn)
+let stripMode: StripMode = "churn";
+type Run = { conclusion: string | null; status: string; name: string };
+let ci: { branch: string; runs: Run[] } = { branch: "", runs: [] };
+type Turn = { edits: number; tests: number; aborted: boolean };
+const turns: Turn[] = [];
+let cur: Turn = { edits: 0, tests: 0, aborted: false };
 let ignored = new Set<string>();
 let filter = "all";
 
@@ -193,6 +200,7 @@ async function fetchList($: EngineInterface): Promise<void> {
     }
     for (const p of list) if (!pr.seen.has(p.number)) $.ui.toast(`New PR #${p.number}: ${p.title}`);
     pr = { ...pr, list, error: undefined };
+    void fetchRuns($);
   } catch (err) {
     const raw = String((err as Error).message ?? err);
     const error = /no git remotes|not a git repository|could not determine/i.test(raw) ? "" // not a GitHub repo: no row
@@ -202,6 +210,16 @@ async function fetchList($: EngineInterface): Promise<void> {
     if (raw !== pr.rawError) $.ui.log(`prdeck gh: ${raw}`, { to: "debug" });
     pr = { ...pr, error, rawError: raw, list: [] };
   }
+  $.ui.invalidate("ui.render");
+}
+
+async function fetchRuns($: EngineInterface): Promise<void> {
+  try {
+    const branch = (await $.process.run(["git", "branch", "--show-current"])).stdout.trim();
+    if (!branch) return;
+    const runs: Run[] = JSON.parse(await gh($, ["run", "list", "--branch", branch, "--limit", "30", "--json", "conclusion,status,name"]));
+    ci = { branch, runs: runs.reverse() }; // oldest first, newest at the right edge
+  } catch { ci = { ...ci, runs: [] }; }
   $.ui.invalidate("ui.render");
 }
 
@@ -325,6 +343,7 @@ const sevCounts = (fs: Finding[]) => (["high", "med", "low"] as Sev[])
 
 export const register: Register = (on, options) => {
   readConfig(options);
+  stripMode = cfg.strip;
   pr = { ...pr, mine: cfg.mine };
   on("session.start", async ($, e, next) => {
     ignored = new Set(((await $.store.get("ignored")) as string[] | undefined) ?? []);
@@ -350,12 +369,19 @@ export const register: Register = (on, options) => {
     return next(e);
   });
   on("command.run", { command: "prdeck" }, () => report());
-  on("turn.start", ($, e, next) => { state.prev = live().length; return next(e); });
-  on("turn.complete", async ($, e, next) => { if (cfg.security) void scan($); void fetchList($); return next(e); });
+  on("turn.start", ($, e, next) => { state.prev = live().length; cur = { edits: 0, tests: 0, aborted: false }; return next(e); });
+  on("turn.complete", async ($, e, next) => {
+    turns.push({ ...cur, aborted: e.isAborted || e.reason === "refusal" });
+    if (turns.length > 200) turns.shift();
+    if (cfg.security) void scan($);
+    void fetchList($);
+    return next(e);
+  });
 
-  on("tool.call", { tool: "Write" }, ($, e, next) => guard($, e.tool_use_id, e.file_path, e.content) ?? next(e));
-  on("tool.call", { tool: "Edit" }, ($, e, next) => guard($, e.tool_use_id, e.file_path, e.new_string) ?? next(e));
+  on("tool.call", { tool: "Write" }, ($, e, next) => { cur.edits++; return guard($, e.tool_use_id, e.file_path, e.content) ?? next(e); });
+  on("tool.call", { tool: "Edit" }, ($, e, next) => { cur.edits++; return guard($, e.tool_use_id, e.file_path, e.new_string) ?? next(e); });
   on("tool.call", { tool: "Bash" }, ($, e, next) => {
+    if (/\b(pytest|jest|vitest|mocha|cargo test|go test|npm test|pnpm test|yarn test|bun test|tsx .*\.test\.)/.test(e.command)) cur.tests++;
     if (!cfg.security || cfg.guard === "off" || !/\bgit\s+(push|commit)\b/.test(e.command)) return next(e);
     const high = live().filter(f => f.sev === "high");
     if (!high.length) return next(e);
@@ -379,22 +405,41 @@ export const register: Register = (on, options) => {
     const w = Math.max(1, e.props.bodyColumns - 2);
     const hotFiles = new Set(fs.map(f => f.file));
     const heat = state.churn.map(c => ({ lines: c.lines, hot: hotFiles.has(c.file) }));
-    const totals = state.churn.reduce((t, c) => ({ add: t.add + c.add, del: t.del + c.del }), { add: 0, del: 0 });
-    const totalsText = `${state.churn.length} files · +${totals.add}/−${totals.del}`;
-    const stripW = Math.max(1, w - totalsText.length - 2);
-    const hs = heatStrip(heat, stripW);
-    const hotList = state.churn.filter(c => hotFiles.has(c.file)).slice(0, 5);
+    // one strip, three datasets; `3` cycles
+    let cells: { cells: string; columns: number }, label: string, legend: string, hover: { key: string; text: string; color?: string }[] = [];
+    const labelW = (t: string) => Math.max(1, w - t.length - 2);
+    if (stripMode === "ci") {
+      const runColor = (r: Run) => r.status !== "completed" ? DOT.pending : ["success", "neutral", "skipped"].includes(r.conclusion ?? "") ? DOT.ok : DOT.fail;
+      const ok = ci.runs.filter(r => runColor(r) === DOT.ok).length, fail = ci.runs.filter(r => runColor(r) === DOT.fail).length, pend = ci.runs.length - ok - fail;
+      label = ci.runs.length ? `ci ${ci.branch} · ${ok}✓ ${fail}✗${pend ? ` ${pend}●` : ""}` : `ci ${ci.branch || "?"} · no runs`;
+      cells = dotRow(ci.runs.map(runColor), labelW(label));
+      legend = "one cell per workflow run on this branch, newest right · green ok · red failed · yellow running";
+      hover = ci.runs.slice(-5).reverse().map((r, i) => ({ key: `run:${i}`, text: `${r.name}: ${r.conclusion ?? r.status}`, color: runColor(r) === DOT.fail ? "error" : undefined }));
+    } else if (stripMode === "timeline") {
+      const all = [...turns, cur];
+      const turnColor = (t: Turn) => t.aborted ? DOT.abort : t.tests ? DOT.test : t.edits ? DOT.edit : DOT.idle;
+      const edits = turns.reduce((n, t) => n + t.edits, 0), tests = turns.reduce((n, t) => n + t.tests, 0);
+      label = `turn ${turns.length + 1} · ${edits} edits · ${tests} test runs`;
+      cells = dotRow(all.map(turnColor), labelW(label));
+      legend = "one cell per turn · blue edited files · green ran tests · red aborted or refused · grey neither";
+    } else {
+      const totals = state.churn.reduce((t, c) => ({ add: t.add + c.add, del: t.del + c.del }), { add: 0, del: 0 });
+      label = `${state.churn.length} files · +${totals.add}/−${totals.del}`;
+      cells = heatStrip(heat, labelW(label));
+      legend = "red finding · orange >100 lines · yellow >20 · green small · width ∝ churn";
+      hover = state.churn.filter(c => hotFiles.has(c.file)).slice(0, 5).map(c => ({ key: `hot:${c.file}`, text: `${c.file}  +${c.add}/−${c.del}`, color: "error" }));
+    }
     const strip = state.fx > 0
       ? <Raster key="fx" columns={w} rows={1} cells={confetti(w, FX_FRAMES - state.fx, FX_FRAMES)} />
-      : hs.columns ? (
-        <Box key="heat" flexDirection="column">
+      : cells.columns ? (
+        <Box key="strip" flexDirection="column">
           <Box gap={2}>
-            <Raster key="heatcells" columns={hs.columns} rows={1} cells={hs.cells} />
-            <Text dimColor>{totalsText}</Text>
+            <Raster key="stripcells" columns={cells.columns} rows={1} cells={cells.cells} />
+            <Text dimColor>{label}</Text>
           </Box>
           <Box display="none" hover={{ display: "flex" }} flexDirection="column">
-            {hotList.map(c => <Text key={`hot:${c.file}`} color="error" wrap="truncate">{`${c.file}  +${c.add}/−${c.del}`}</Text>)}
-            <Text dimColor>{"red finding · orange >100 lines · yellow >20 · green small · width ∝ churn"}</Text>
+            {hover.map(h => <Text key={h.key} color={h.color} wrap="truncate">{h.text}</Text>)}
+            <Text dimColor>{legend}</Text>
           </Box>
         </Box>
       ) : null;
@@ -435,6 +480,7 @@ export const register: Register = (on, options) => {
         </Text>
         {delta > 0 ? <Text color="error" bold>{`(+${delta})`}</Text> : null}
         <Button key="details" plain dimColor hotkey="1" onPress={() => void togglePane($)}>details</Button>
+        <Button key="strip-mode" plain dimColor hotkey="3" onPress={() => { stripMode = STRIP_MODES[(STRIP_MODES.indexOf(stripMode) + 1) % STRIP_MODES.length]!; $.ui.invalidate("ui.render"); }}>{stripMode}</Button>
       </Box>
       {strip ? <Box paddingLeft={2}>{strip}</Box> : null}
       </Box>

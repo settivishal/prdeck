@@ -47,6 +47,13 @@ export function heatStrip(files: HeatFile[], columns: number): { cells: string; 
   return { cells: pack(cells), columns: cells.length };
 }
 
+// one cell per item, newest last; more items than columns keeps the newest
+export function dotRow(colors: number[], columns: number): { cells: string; columns: number } {
+  const shown = colors.slice(-columns);
+  return { cells: pack(shown.map(c => [BLOCK, c])), columns: shown.length };
+}
+export const DOT = { ok: 0x22c55e, fail: 0xef4444, pending: 0xeab308, edit: 0x3b82f6, test: 0x22c55e, abort: 0xef4444, idle: 0x475569 };
+
 const CONFETTI = [0xef4444, 0xf97316, 0xeab308, 0x22c55e, 0x3b82f6, 0xa855f7, 0xec4899];
 const GLYPHS = [0x2022, 0x2736, 0x25cf, 0x2731, 0x25a0, 0x2666]; // • ✶ ● ✱ ■ ♦
 

@@ -4,7 +4,7 @@ A Claude Code mod that puts your pull requests and security findings above the p
 
 ```
 ● security  2 high · 1 low  (+1)                        1: details
-  ██████████████                     ← heat strip: one cell per changed file
+  ██████████████ ████ ██  5 files · +172/−29        ← strip: churn / ci / timeline, 3 cycles
 ⇄ 3 PRs · #42 fix login · ✓4 ◐1 · changes requested  (+1 new)   2: PRs
 ```
 
@@ -21,7 +21,12 @@ Requires Claude Code 2.1.278+ and, for the PR row, [`gh`](https://cli.github.com
 
 **Security row** — scans your branch against its base (merge-base, working tree and untracked files included) for secrets, private keys, `eval`, shell exec, SQL string concat, unsafe deserialization, `innerHTML`, TLS verification off, `chmod 777`, plain `http://`. Colour is the worst severity; `(+N)` means the last turn added findings.
 
-**Heat strip** — a treemap of your branch: one bar per changed file, width by lines changed, hot files (with a finding) first in red, then orange > yellow > green by churn; totals at the end. Hover it for the hot file names and the legend. When the branch goes from findings to clean: confetti. Pending checks spin. Hover `⇄` to peek at the top three PRs without opening the pane.
+**Strip** — the bar under the security row; `3` cycles three views, hover any for its legend:
+- **churn** — a treemap of your branch: one bar per changed file, width by lines changed, hot files (with a finding) first in red, then orange > yellow > green; totals at the end; hover lists the hot files.
+- **ci** — the last 30 workflow runs on your current branch, one cell each, newest right: green ok, red failed, yellow running; hover shows the latest five by name.
+- **timeline** — one cell per turn this session: blue edited files, green ran tests, red aborted or refused, grey neither.
+
+When the branch goes from findings to clean: confetti. Pending checks spin. Hover `⇄` to peek at the top three PRs without opening the pane.
 
 **Haiku triage** — every regex hit is rated by Haiku once (`high` / `med` / `low` / false positive) and cached; false positives vanish from the bar, the reason shows in the pane. Off in `/config` if you'd rather not spend the tokens.
 
@@ -67,6 +72,7 @@ Merge and close ask for confirmation first.
 | Base branch | auto | `origin/main`, `origin/master`, `main`, `master` in that order |
 | Only my PRs | on | off lists every open PR |
 | PR poll interval | 60 s | minimum 15 |
+| Strip mode | `churn` | `churn` · `ci` · `timeline` — what the strip shows at start |
 | Haiku triage | on | rate hits with Haiku, drop false positives |
 | Extra rules file | — | path to a JSON array: `[{ "name": "todo", "pattern": "TODO", "flags": "i", "sev": "low" }]`, merged with the built-ins |
 

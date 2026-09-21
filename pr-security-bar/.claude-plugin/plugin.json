@@ -1,0 +1,7 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "pr-security-bar",
+  "version": "0.1.0",
+  "description": "PR security check bar above the prompt",
+  "author": { "name": "Vishal K Setti", "email": "vishalsetti2000@gmail.com" }
+}

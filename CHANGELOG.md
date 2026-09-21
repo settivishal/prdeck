@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.8.1 — 2026-09-21
+- release script: scripts/release.sh does bump, changelog, checks, tag, release, update
+
 ## 0.8.0 — 2026-09-21
 - `Security scanning` setting: off hides the security row, strip and pane and disables scan, guards and model context; PR feed stays.
 - `hooks/config.ts` holds settings; CHANGELOG and GitHub releases per tag.

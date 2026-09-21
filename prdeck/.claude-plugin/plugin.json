@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "prdeck",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "PR feed, review pane and security checks above the prompt",
   "author": {
     "name": "Vishal K Setti",
